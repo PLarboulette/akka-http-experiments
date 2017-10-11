@@ -1,13 +1,17 @@
-import akka.actor.ActorSystem
+import actors.{AddTask, GetAll, TaskActor, UpdateTask}
+import akka.actor.{ActorSystem, Props}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity, StatusCodes}
 import akka.http.scaladsl.server.Directives._
+import akka.pattern.ask
 import akka.stream.ActorMaterializer
-import models.{People, Team}
+import akka.util.{ByteString, Timeout}
+import models.{People, Task}
 import spray.json.DefaultJsonProtocol._
 import utils.Helper
 
+import scala.concurrent.duration._
 import scala.io.StdIn
 
 object Main extends App {
@@ -18,38 +22,41 @@ object Main extends App {
 
   implicit val peopleFormat = jsonFormat4(People)
   implicit val teamFormat = jsonFormat2(Team)
+  implicit val taskFormat = jsonFormat4(Task)
+  implicit val addTaskFormat = jsonFormat3(AddTask)
 
+  val taskActor = system.actorOf(Props[TaskActor], "taskActor")
 
   val route =
-    path("hello") {
+    path("random") {
       get {
-        complete(HttpEntity(ContentTypes.`text/html(UTF-8)`, "<h1>Say hello to akka-http</h1>"))
+        complete(
+          HttpEntity(ContentTypes.`text/plain(UTF-8)`, Helper.generateNumbers.map { i => ByteString(s"$i\n")})
+        )
       }
-    } ~ path("peoples") {
+    } ~ path("tasks") {
       get {
-        onSuccess(Helper.getAllPeoples()) {
-          case peoples : List[People] => complete(peoples)
-          case _ => complete(StatusCodes.NotFound)
+        parameter("limit".as[Int].?) { (limit) =>
+          implicit val timeout: Timeout = 5.seconds
+          val tasks = (taskActor ? GetAll(limit)).mapTo[List[Task]]
+          complete(tasks)
         }
       }
-    } ~ pathPrefix("peoples" / IntNumber) { peopleId =>
-      onSuccess(Helper.getPeopleById(peopleId)) {
-        case Some(people) => complete(people)
-        case None => complete(StatusCodes.NotFound)
-      }
-    } ~ path("teams") {
-      get {
-        onSuccess(Helper.getAllTeams()) {
-          case teams : List[Team] => complete(teams)
-          case _ => complete(StatusCodes.NotFound)
+    } ~ path("tasks") {
+      post {
+        entity(as[AddTask]) {
+          task =>
+            taskActor ! AddTask(task.name, task.content, task.peopleId)
+            complete(s"Task added")
         }
       }
-    } ~ pathPrefix("teams" / IntNumber) {
-      teamId =>
-        onSuccess(Helper.getTeamById(teamId)) {
-          case Some(team) => complete(team)
-          case None => complete(StatusCodes.NotFound)
+    } ~ pathPrefix("tasks" / IntNumber) { id =>
+      put {
+        parameter("content".as[String]) { (content) =>
+          taskActor ! UpdateTask(id, content)
+          complete((StatusCodes.Accepted, "Content updated"))
         }
+      }
     }
 
   val server = "localhost"
@@ -66,3 +73,4 @@ object Main extends App {
     _ => system.terminate()
   )
 }
+
